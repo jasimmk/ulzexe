@@ -37,7 +37,7 @@ Run all three checks before considering a change done. CI runs them on Linux, ma
 ## Releases
 
 - SemVer, automated by release-please from Conventional Commits on `main`: `fix:` → patch, `feat:` → minor, `feat!:` → major. Use these prefixes in commit messages.
-- Pushing a `vX.Y.Z` tag or running the Release workflow manually builds the binaries for 8 targets. The tag must match `version` in `Cargo.toml`.
+- Pushing a `vX.Y.Z` tag or running the Release workflow manually builds the binaries for 7 targets. The tag must match `version` in `Cargo.toml`.
 - Never edit `CHANGELOG.md` or the version in `.release-please-manifest.json` by hand.
 
 ## Credits & license
