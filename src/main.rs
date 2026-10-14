@@ -463,6 +463,14 @@ fn decompress(input: &[u8], pos: u64, out: &mut Vec<u8>) -> Result<usize> {
 // File handling
 // ---------------------------------------------------------------------------
 
+/// Like `println!`, but never panics when stdout is closed (e.g. `| head`):
+/// a panic mid-operation could leave the input renamed without an output.
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(io::stdout(), $($arg)*);
+    }};
+}
+
 fn has_ext(path: &Path, ext: &str) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
@@ -521,25 +529,84 @@ fn plan(args: &[OsString]) -> Result<Plan> {
     })
 }
 
+/// True if both paths name the same existing file. Compares the file's
+/// identity (device + inode on Unix, volume + file index on Windows), so
+/// differently-cased names, hard links and alternate paths are all detected.
 fn same_file(a: &Path, b: &Path) -> bool {
-    match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
+    match (file_id(a), file_id(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => match (fs::canonicalize(a), fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        },
     }
+}
+
+#[cfg(unix)]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino()))
+}
+
+/// `std` has no stable file-index API on Windows, so call
+/// `GetFileInformationByHandle` directly rather than pulling in a crate.
+#[cfg(windows)]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::ffi::c_void;
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        creation: FileTime,
+        last_access: FileTime,
+        last_write: FileTime,
+        volume_serial: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(file: *mut c_void, info: *mut ByHandleFileInformation)
+            -> i32;
+    }
+
+    let file = fs::File::open(path).ok()?;
+    let mut info = MaybeUninit::<ByHandleFileInformation>::uninit();
+    // SAFETY: `file` is an open handle for the duration of the call and `info`
+    // points to writable memory with the Win32 BY_HANDLE_FILE_INFORMATION layout.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+        return None;
+    }
+    // SAFETY: the call succeeded, so the struct is fully initialised.
+    let info = unsafe { info.assume_init() };
+    Some((
+        u64::from(info.volume_serial),
+        u64::from(info.index_high) << 32 | u64::from(info.index_low),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_id(_: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// Temporary file next to `target`, so the final rename stays on one volume.
 fn temp_path(target: &Path) -> PathBuf {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     target.with_file_name(format!(".{name}.{}.ulzexe.tmp", std::process::id()))
-}
-
-/// Rename that also replaces an existing destination on Windows.
-fn replace(from: &Path, to: &Path) -> io::Result<()> {
-    if cfg!(windows) && to.exists() {
-        fs::remove_file(to)?;
-    }
-    fs::rename(from, to)
 }
 
 fn write_output(plan: &Plan, data: &[u8]) -> Result<()> {
@@ -555,18 +622,13 @@ fn write_output(plan: &Plan, data: &[u8]) -> Result<()> {
     }
 
     if let Some(backup) = &plan.backup {
-        if let Err(e) = replace(&plan.input, backup) {
+        if let Err(e) = fs::rename(&plan.input, backup) {
             let _ = fs::remove_file(&tmp);
             return Err(Error::io(format!("can't make '{}'", backup.display()), e));
         }
-        println!(
-            "'{}' is renamed to '{}'.",
-            plan.input.display(),
-            backup.display()
-        );
     }
 
-    if let Err(e) = replace(&tmp, &plan.output) {
+    if let Err(e) = fs::rename(&tmp, &plan.output) {
         let _ = fs::remove_file(&tmp);
         if let Some(backup) = &plan.backup {
             let _ = fs::rename(backup, &plan.input);
@@ -576,6 +638,13 @@ fn write_output(plan: &Plan, data: &[u8]) -> Result<()> {
             e,
         ));
     }
+    if let Some(backup) = &plan.backup {
+        say!(
+            "'{}' is renamed to '{}'.",
+            plan.input.display(),
+            backup.display()
+        );
+    }
     Ok(())
 }
 
@@ -584,13 +653,13 @@ fn run(args: &[OsString]) -> Result<Unpacked> {
     let input = fs::read(&plan.input)
         .map_err(|e| Error::io(format!("can't read '{}'", plan.input.display()), e))?;
     let unpacked = unpack(&input)?;
-    println!(
+    say!(
         "file '{}' is compressed by LZEXE Ver. {}",
         plan.input.display(),
         unpacked.version
     );
     write_output(&plan, &unpacked.exe)?;
-    println!(
+    say!(
         "unpacked file '{}' is generated ({} bytes, {} relocations).",
         plan.output.display(),
         unpacked.exe.len(),
@@ -605,15 +674,15 @@ fn main() -> ExitCode {
         args.first().and_then(|a| a.to_str()),
         Some("-h" | "--help" | "-V" | "--version")
     ) {
-        println!("ULZEXE Ver. {VERSION}");
-        println!("{}", Error::Usage);
+        say!("ULZEXE Ver. {VERSION}");
+        say!("{}", Error::Usage);
         return ExitCode::SUCCESS;
     }
-    println!("ULZEXE Ver. {VERSION}");
+    say!("ULZEXE Ver. {VERSION}");
     match run(&args) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e}");
+            let _ = writeln!(io::stderr(), "error: {e}");
             ExitCode::FAILURE
         }
     }
@@ -1362,6 +1431,42 @@ mod tests {
         fs::write(dir.join("ゲーム.exe"), &packed).unwrap();
         run(&[dir.join("ゲーム").into()]).unwrap();
         assert!(dir.join("ゲーム.olz").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn same_file_detection() {
+        let dir = scratch_dir("samefile");
+        let a = dir.join("prog.exe");
+        fs::write(&a, b"x").unwrap();
+        assert!(same_file(&a, &dir.join(".").join("prog.exe")));
+        assert!(!same_file(&a, &dir.join("other.exe")));
+
+        // Hard link: different name, same file.
+        let link = dir.join("link.exe");
+        fs::hard_link(&a, &link).unwrap();
+        assert!(same_file(&a, &link));
+
+        // Differently-cased name on a case-insensitive filesystem (macOS/Windows
+        // defaults) must be treated as in-place, so a backup is kept.
+        let upper = dir.join("PROG.EXE");
+        if upper.exists() {
+            assert!(same_file(&a, &upper));
+            let p = plan(&[a.clone().into(), upper.into()]).unwrap();
+            assert_eq!(p.backup, Some(dir.join("prog.olz")));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn in_place_via_alternate_name_keeps_backup() {
+        let dir = scratch_dir("altname");
+        let packed = build_exe(Version::V091, &encode(&[Tok::Lit(1)]), &reloc91_none());
+        let a = dir.join("in.exe");
+        fs::write(&a, &packed).unwrap();
+        run(&[a.clone().into(), dir.join(".").join("in.exe").into()]).unwrap();
+        assert_eq!(fs::read(dir.join("in.olz")).unwrap(), packed);
+        assert_eq!(fs::read(&a).unwrap(), unpack(&packed).unwrap().exe);
         fs::remove_dir_all(dir).unwrap();
     }
 }

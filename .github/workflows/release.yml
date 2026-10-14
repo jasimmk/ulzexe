@@ -5,11 +5,13 @@
 # release-please keeps a release PR open; merging it bumps Cargo.toml/Cargo.lock,
 # updates CHANGELOG.md, tags vX.Y.Z and creates the GitHub release. The build
 # jobs below then attach binaries for every platform to that release.
+# Pushing a vX.Y.Z tag manually also builds and publishes binaries.
 name: Release
 
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
   workflow_dispatch:
     inputs:
       tag:
@@ -25,7 +27,7 @@ env:
 
 jobs:
   release-please:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
     outputs:
       created: ${{ steps.rp.outputs.release_created }}
@@ -39,7 +41,11 @@ jobs:
 
   resolve:
     needs: release-please
-    if: always() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
+    if: >-
+      always() && (
+        needs.release-please.outputs.created == 'true' ||
+        github.event_name == 'workflow_dispatch' ||
+        github.ref_type == 'tag')
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.t.outputs.tag }}
@@ -47,7 +53,7 @@ jobs:
       - id: t
         shell: bash
         run: |
-          tag="${{ github.event.inputs.tag || needs.release-please.outputs.tag }}"
+          tag="${{ github.event.inputs.tag || needs.release-please.outputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::'$tag' is not a semantic version tag (vMAJOR.MINOR.PATCH)"; exit 1
           fi
