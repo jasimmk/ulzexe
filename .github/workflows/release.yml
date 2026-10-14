@@ -1,0 +1,131 @@
+# Semantic-versioned releases driven by Conventional Commits:
+#   fix: ...            -> patch bump
+#   feat: ...           -> minor bump
+#   feat!: / BREAKING CHANGE: -> major bump
+# release-please keeps a release PR open; merging it bumps Cargo.toml/Cargo.lock,
+# updates CHANGELOG.md, tags vX.Y.Z and creates the GitHub release. The build
+# jobs below then attach binaries for every platform to that release.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag (vX.Y.Z) to (re)build binaries for
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  resolve:
+    needs: release-please
+    if: always() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || needs.release-please.outputs.tag }}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$tag' is not a semantic version tag (vMAJOR.MINOR.PATCH)"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: resolve
+    if: always() && needs.resolve.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu,   os: ubuntu-latest }
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest, musl: true }
+          - { target: aarch64-unknown-linux-gnu,  os: ubuntu-24.04-arm }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, musl: true }
+          - { target: x86_64-apple-darwin,        os: macos-13 }
+          - { target: aarch64-apple-darwin,       os: macos-latest }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest }
+          - { target: aarch64-pc-windows-msvc,    os: windows-latest, cross: true }
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag matches Cargo.toml version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [[ "v$version" == "$TAG" ]] || { echo "::error::Cargo.toml is $version but tag is $TAG"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Test
+        if: ${{ !matrix.cross }}
+        run: cargo test --locked --release --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package
+        id: pkg
+        shell: bash
+        run: |
+          name="ulzexe-${TAG}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp README.md "dist/$name/"
+          [[ -f LICENSE ]] && cp LICENSE "dist/$name/"
+          cd dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "../target/${{ matrix.target }}/release/ulzexe.exe" "$name/"
+            7z a -tzip "$name.zip" "$name" > /dev/null
+            archive="$name.zip"
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            cp "../target/${{ matrix.target }}/release/ulzexe" "$name/"
+            tar -czf "$name.tar.gz" "$name"
+            archive="$name.tar.gz"
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          echo "archive=dist/$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.archive }}.sha256

@@ -1,0 +1,27 @@
+[package]
+name = "ulzexe"
+version = "1.0.0"
+authors = ["jasimmk"]
+edition = "2021"
+rust-version = "1.87"
+description = "Decompress DOS executables packed with LZEXE 0.90 / 0.91 (Rust port of UNLZEXE)"
+readme = "README.md"
+homepage = "https://bellard.org/lzexe"
+# Original C implementation this port is based on:
+repository = "https://github.com/thbar/demomaking/tree/master/tools/unlzexe"
+keywords = ["lzexe", "dos", "exe", "decompress", "unpack"]
+categories = ["command-line-utilities", "compression"]
+
+[[bin]]
+name = "ulzexe"
+path = "src/main.rs"
+
+# Intentionally no external dependencies.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
