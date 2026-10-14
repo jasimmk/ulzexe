@@ -2,6 +2,7 @@
 name = "ulzexe"
 version = "1.0.0"
 authors = ["jasimmk"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.87"
 description = "Decompress DOS executables packed with LZEXE 0.90 / 0.91 (Rust port of UNLZEXE)"

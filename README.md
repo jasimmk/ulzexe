@@ -45,3 +45,8 @@ Windows (x64/ARM64), each with a `.sha256` checksum.
 | 1.0 | jasimmk (2026) | Rust port: in-memory, bounds-checked, cross-platform |
 
 LZEXE was written by Fabrice Bellard — https://bellard.org/lzexe
+
+## License
+
+MIT, see [LICENSE](LICENSE). The original UNLZEXE C code was released as freeware with no
+license statement. Its authors are credited in the LICENSE notice.
