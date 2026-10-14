@@ -30,7 +30,7 @@ Versions follow [SemVer](https://semver.org) and are automated with
 [Conventional Commits](https://www.conventionalcommits.org) on `main`:
 `fix:` → patch, `feat:` → minor, `feat!:` / `BREAKING CHANGE:` → major.
 Merging the generated release PR tags `vX.Y.Z` and publishes binaries for
-Linux (x86_64/aarch64, gnu + static musl), macOS (Intel/Apple Silicon) and
+Linux (x86_64/aarch64, gnu + static musl), macOS (Apple Silicon) and
 Windows (x64/ARM64), each with a `.sha256` checksum.
 
 ## Version history

@@ -33,7 +33,7 @@ jobs:
       created: ${{ steps.rp.outputs.release_created }}
       tag: ${{ steps.rp.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: rp
         with:
           config-file: release-please-config.json
@@ -66,12 +66,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Pinned images: the glibc of the Linux build host is the minimum glibc
+        # the shipped *-linux-gnu binaries need, so don't follow ubuntu-latest.
         include:
-          - { target: x86_64-unknown-linux-gnu,   os: ubuntu-latest }
-          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest, musl: true }
+          - { target: x86_64-unknown-linux-gnu,   os: ubuntu-24.04 }
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04, musl: true }
           - { target: aarch64-unknown-linux-gnu,  os: ubuntu-24.04-arm }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, musl: true }
-          - { target: x86_64-apple-darwin,        os: macos-13 }
           - { target: aarch64-apple-darwin,       os: macos-latest }
           - { target: x86_64-pc-windows-msvc,     os: windows-latest }
           - { target: aarch64-pc-windows-msvc,    os: windows-latest, cross: true }
@@ -79,7 +80,7 @@ jobs:
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
@@ -129,7 +130,7 @@ jobs:
           echo "archive=dist/$archive" >> "$GITHUB_OUTPUT"
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
           files: |

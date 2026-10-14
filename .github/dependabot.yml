@@ -1,0 +1,9 @@
+# Keeps workflow actions current (e.g. Node runtime deprecations) via weekly PRs.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
