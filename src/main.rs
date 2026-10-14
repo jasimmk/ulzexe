@@ -529,21 +529,78 @@ fn plan(args: &[OsString]) -> Result<Plan> {
     })
 }
 
-/// True if both paths name the same existing file. On Unix this compares
-/// device and inode, so case-insensitive names and hard links are detected; on
-/// Windows `canonicalize` resolves the real on-disk name through a handle.
+/// True if both paths name the same existing file. Compares the file's
+/// identity (device + inode on Unix, volume + file index on Windows), so
+/// differently-cased names, hard links and alternate paths are all detected.
 fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(ma), Ok(mb)) = (fs::metadata(a), fs::metadata(b)) {
-            return ma.dev() == mb.dev() && ma.ino() == mb.ino();
-        }
+    match (file_id(a), file_id(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => match (fs::canonicalize(a), fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        },
     }
-    match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
+}
+
+#[cfg(unix)]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino()))
+}
+
+/// `std` has no stable file-index API on Windows, so call
+/// `GetFileInformationByHandle` directly rather than pulling in a crate.
+#[cfg(windows)]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::ffi::c_void;
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
     }
+
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        creation: FileTime,
+        last_access: FileTime,
+        last_write: FileTime,
+        volume_serial: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(file: *mut c_void, info: *mut ByHandleFileInformation)
+            -> i32;
+    }
+
+    let file = fs::File::open(path).ok()?;
+    let mut info = MaybeUninit::<ByHandleFileInformation>::uninit();
+    // SAFETY: `file` is an open handle for the duration of the call and `info`
+    // points to writable memory with the Win32 BY_HANDLE_FILE_INFORMATION layout.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+        return None;
+    }
+    // SAFETY: the call succeeded, so the struct is fully initialised.
+    let info = unsafe { info.assume_init() };
+    Some((
+        u64::from(info.volume_serial),
+        u64::from(info.index_high) << 32 | u64::from(info.index_low),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_id(_: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// Temporary file next to `target`, so the final rename stays on one volume.

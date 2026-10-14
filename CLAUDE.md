@@ -22,6 +22,7 @@ Run all three checks before considering a change done. CI runs them on Linux, ma
 
 ## Code invariants
 
+- The only `unsafe` is the Windows `GetFileInformationByHandle` call in `file_id`. Add no other `unsafe`.
 - Parse from the in-memory `&[u8]` through `Reader` / `BitReader` only. Every read is bounds-checked and returns `Error::Truncated` / `Error::NotLzexe`. Never index input directly or `unwrap` on input-derived data.
 - Header arithmetic copies the 16-bit C semantics: use `wrapping_*` where the original wraps (memory fields), and checked or widened math for file offsets.
 - `BitReader` refills **eagerly**, as the original does. Bit and byte reads share one stream, so the order matters. A refill past EOF only errors when another bit is requested.
